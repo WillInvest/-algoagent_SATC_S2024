@@ -3,8 +3,9 @@ from time import sleep
 from datetime import datetime, timedelta
 import datetime as dt
 from threading import Thread
+from crossover import crossover_strategy
 
-# NOTE: for documentation on the different classes and methods used to interact with the SHIFT system, 
+# NOTE: for documentation on the different classes and methods used to interact with the SHIFT system,
 # see: https://github.com/hanlonlab/shift-python/wiki
 
 def cancel_orders(trader, ticker):
@@ -109,7 +110,7 @@ def main(trader):
     # start_time = datetime.combine(current, dt.time(9, 30, 0))
     # end_time = datetime.combine(current, dt.time(15, 50, 0))
     start_time = current
-    end_time = start_time + timedelta(minutes=1)
+    end_time = start_time + timedelta(minutes=3)
 
     while trader.get_last_trade_time() < start_time:
         print("still waiting for market open")
@@ -128,7 +129,7 @@ def main(trader):
     for ticker in tickers:
         # initializes threads containing the strategy for each ticker
         threads.append(
-            Thread(target=strategy, args=(trader, ticker, end_time)))
+            Thread(target=crossover_strategy, args=(trader, ticker, end_time)))
 
     for thread in threads:
         thread.start()
@@ -144,6 +145,9 @@ def main(trader):
         # setting the timeout argument for join() can prevent this
         thread.join()
 
+    # converts a limit order into a cancel order, and submits it to the server
+    trader.cancel_all_pending_orders()
+
     # make sure all remaining orders have been cancelled and all positions have been closed
     for ticker in tickers:
         cancel_orders(trader, ticker)
@@ -156,7 +160,7 @@ def main(trader):
 
 
 if __name__ == '__main__':
-    with shift.Trader("algoagent_test001") as trader:
+    with shift.Trader("algoagent_test004") as trader:
         trader.connect("initiator.cfg", "x6QYVYRT")
         sleep(1)
         trader.sub_all_order_book()
