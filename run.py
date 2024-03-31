@@ -158,6 +158,7 @@ def run_episodes(env, agent, total_episodes):
 if __name__ == '__main__':
     with shift.Trader("algoagent") as trader:
         trader.connect("initiator.cfg", "x6QYVYRT")
+
         sleep(1)
         trader.sub_all_order_book()
         sleep(1)
