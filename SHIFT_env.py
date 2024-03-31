@@ -4,6 +4,8 @@ import pandas as pd
 import numpy as np
 import time
 from time import sleep
+from tensorflow.keras.utils import Progbar
+from shift_agent import *
 
 
 class CirList:
@@ -66,7 +68,9 @@ class SHIFT_env:
                  nTimeStep,
                  ODBK_range,
                  symbol,
-                 commission):
+                 commission,
+                 time_steps,
+                 target_shares):
 
         self.timeInterval = t
         self.symbol = symbol
@@ -78,6 +82,7 @@ class SHIFT_env:
 
         self.dataThread = Thread(target=self._link)
         self.table = CirList(nTimeStep)
+        self.priceTable = CirList(2)
 
         print('Waiting for connection', end='')
         for _ in range(5):
@@ -88,16 +93,17 @@ class SHIFT_env:
         self.thread_alive = True
         self.dataThread.start()
 
-        self.remained_share = None
+        self.remained_share = 0
         self.isBuy = None
-        self.remained_time = None
+        self.remained_time = 5
         self.initial_pl = self.trader.get_portfolio_item(self.symbol).get_realized_pl()
+        self.time_steps = time_steps
+        self.target_shares = target_shares
 
     def set_objective(self, share, remained_time):
-        self.remained_share = abs(share)
-
         self.remained_time = remained_time
-        self.isBuy = True if share > 0 else False
+        self.isBuy = share > 0
+        self.remained_share = abs(share)
 
     @staticmethod
     def action_space():
@@ -107,31 +113,37 @@ class SHIFT_env:
     def obs_space():
         return 7
 
+    def get_signal(self):
+        mid_price = []
+        tab = self.priceTable
+        if tab.isFull():
+            for ele in tab.getData():
+                mid_price.append(ele)
+            if mid_price[-1] > mid_price[0]:
+                self.set_objective(self.target_shares, self.time_steps)
+            if mid_price[-1] < mid_price[0]:
+                self.set_objective(-self.target_shares, self.time_steps)
+
+
     def _link(self):
         while self.trader.is_connected() and self.thread_alive:
-            last_price = self.trader.get_last_price(self.symbol)
+            last_price = self.trader.get_best_price("AAPL").get_bid_price()
+            self.priceTable.insertData(last_price)
+            # Update order book data
             Ask_ls = self.trader.get_order_book(self.symbol, shift.OrderBookType.GLOBAL_ASK, self.ODBK_range)
             Bid_ls = self.trader.get_order_book(self.symbol, shift.OrderBookType.GLOBAL_BID, self.ODBK_range)
             orders = OrderBook(Ask_ls, Bid_ls, last_price)
             self.table.insertData(orders)
-            #print(self.table)
             time.sleep(self.timeInterval)
-        print('Data Thread stopped.')
 
     def step(self, action):
-        print("remained_time", self.remained_time)
-        print("---------------stepping---------------")
-        premium = action[0]
+        premium = action
         signBuy = 1 if self.isBuy else -1
-        base_price = self._getClosePrice(self.remained_share)
-        print("premium: ", premium, "signBuy: ", signBuy, "remained shares :", self.remained_share, "base_price: ", base_price)
+        if self.remained_share == 0:
+            base_price = self.trader.get_best_price("AAPL").get_bid_price()
+        else:
+            base_price = self._getClosePrice(self.remained_share)
         obj_price = base_price - signBuy * premium
-        print("obj_price: ", obj_price)
-
-        #print(f'obj price: {obj_price}')
-
-        print("---------------Initial Portfolio---------------")
-        print("initial shares holding:", self.trader.get_portfolio_item(self.symbol).get_long_shares())
 
         if self.remained_time > 0:
             orderType = shift.Order.LIMIT_BUY if self.isBuy else shift.Order.LIMIT_SELL
@@ -141,21 +153,9 @@ class SHIFT_env:
         order = shift.Order(orderType, self.symbol, self.remained_share, obj_price)
         # Corrected method name for submitting order
         self.trader.submit_order(order)
-        time.sleep(1)
-
-        print("---------------submitted orders---------------")
-        print("Submitted orders size: %d" % self.trader.get_submitted_orders_size())
-        self._getSubOrder()
-        print("post-submit shares holding:", self.trader.get_portfolio_item(self.symbol).get_long_shares())
-
-
-        print("---------------waiting list---------------")
-        # Corrected method name for getting the waiting list size
-        print(f'waiting list size : {len(self.trader.get_waiting_list())}')
-        self._getWaitingList()
+        time.sleep(self.timeInterval)
 
         if self.trader.get_waiting_list_size() > 0:
-            print(f'order size: {order.size}')
             if order.type == shift.Order.LIMIT_BUY:
                 order.type = shift.Order.CANCEL_BID
             else:
@@ -167,34 +167,19 @@ class SHIFT_env:
             exec_share = self.remained_share
             self.remained_share = 0
 
-        print("execute_shares: ", exec_share)
-        print("post-waiting shares holding:", self.trader.get_portfolio_item(self.symbol).get_long_shares())
-
-
         # Define reward
         done = False
-        #if self.remained_time > 0:
-        if self.remained_share != 0:
-            if premium > 0:
-                reward = exec_share * premium + exec_share * 0.2
-            else:
-                reward = exec_share * premium - exec_share * 0.3
-        else:
-            reward = exec_share * 0 - exec_share * 0.3
-            print("reward: ", reward)
-            done = True
-            print("remained_share: ", self.remained_share)
-            print("Episode finished.")
-            # cancel unfilled orders and close positions for this ticker
-            #self.cancel_orders()
-            #self.close_positions()
-            self._getWaitingList()
-            print("---------------ending portfolio---------------")
-            print("ending shares holding:", self.trader.get_portfolio_item(self.symbol).get_long_shares())
-            next_obs = self._get_obs()
-            return next_obs, reward, done, dict()
 
-        print("reward: ", reward)
+        status = self.trader.get_submitted_orders()[-1].type
+
+        if status == shift.Order.Type.MARKET_BUY or status == shift.Order.Type.MARKET_SELL:
+            reward = -2.0
+        else:
+            reward = (exec_share + self.remained_share) * premium
+
+        if self.remained_share == 0:
+            done = True
+
         self.remained_time -= 1
         next_obs = self._get_obs()
         time.sleep(self.timeInterval)
@@ -208,7 +193,9 @@ class SHIFT_env:
         return self.trader.get_close_price(self.symbol, self.isBuy, abs(share))
 
     def _getSubOrder(self):
-        for order in self.trader.get_submitted_orders():
+        # Get the last 5 orders, or all orders if fewer than 5
+        latest_orders = self.trader.get_submitted_orders()[-5:]
+        for order in latest_orders:
             if order.status == shift.Order.Status.FILLED:
                 price = order.executed_price
             else:
@@ -224,6 +211,18 @@ class SHIFT_env:
                     order.status
                 )
             )
+
+    def getSummary(self):
+        print("Buying Power\tTotal Shares\tTotal P&L\tTimestamp")
+        print(
+            "%12.2f\t%12d\t%9.2f\t%26s"
+            % (
+                self.trader.get_portfolio_summary().get_total_bp(),
+                self.trader.get_portfolio_summary().get_total_shares(),
+                self.trader.get_portfolio_summary().get_total_realized_pl(),
+                self.trader.get_portfolio_summary().get_timestamp(),
+            )
+        )
 
     def _getWaitingList(self):
         for order in self.trader.get_waiting_list():
@@ -290,7 +289,7 @@ class SHIFT_env:
                                 self.symbol,
                                 int(long_shares / 100))  # we divide by 100 because orders are placed for lots of 100 shares
             self.trader.submit_order(order)
-            sleep(3)  # we sleep to give time for the order to process
+            sleep(self.timeInterval)  # we sleep to give time for the order to process
 
         # close any short positions
         short_shares = item.get_short_shares()
@@ -299,7 +298,7 @@ class SHIFT_env:
             order = shift.Order(shift.Order.Type.MARKET_BUY,
                                 self.symbol, int(short_shares / 100))
             self.trader.submit_order(order)
-            sleep(3)
+            sleep(self.timeInterval)
 
     def reset(self):
         return self._get_obs()
@@ -333,6 +332,10 @@ class SHIFT_env:
                     feature += [bas, p, sp, li, np.nan]
         return np.array(feature)
 
+    @staticmethod
+    def _mid_price(df, n_ask):
+        mid_price = (df.price[n_ask - 1] + df.price[n_ask])/2
+        return mid_price
     @staticmethod
     def _ba_spread(df, n_ask):
         spread = df.price[n_ask - 1] - df.price[n_ask]
@@ -394,23 +397,26 @@ class SHIFT_env:
         self.kill_thread()
 
 
+
+
+
+
 # if __name__ == '__main__':
-#     with shift.Trader("algoagent_test004") as trader:
+#     with shift.Trader("algoagent") as trader:
 #         trader.connect("initiator.cfg", "x6QYVYRT")
 #         sleep(1)  # Ensure connection is established
 #         trader.sub_all_order_book()
 #         sleep(1)
 #
-#         env = SHIFT_env(trader, 1, 1, 5, 'AAPL', 0.003)
-#         env.set_objective(10, 5)
 #
-#         for i in range(100):
-#             action = 0.1 * np.random.uniform(0, 0.1, size=1)
-#             obs, reward, done, _ = env.step(action)
-#             if done:
-#                 print('finished')
-#                 break
+#         env = SHIFT_env(trader, 0.1, 1, 5, 'AAPL', 0.003, 10, 1)
+#         agent = PPOActorCritic(env)
 #
+#         env.cancel_orders()
+#         env.close_positions()
+#
+#         TOTAL_EPISODES = 20
+#         run_episodes(env, agent, TOTAL_EPISODES)
 #
 #         env.kill_thread()
 #         trader.disconnect()
