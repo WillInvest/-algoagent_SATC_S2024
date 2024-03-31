@@ -1,169 +1,172 @@
 import shift
-from time import sleep
-from datetime import datetime, timedelta
-import datetime as dt
-from threading import Thread
-from crossover import crossover_strategy
-
-# NOTE: for documentation on the different classes and methods used to interact with the SHIFT system,
-# see: https://github.com/hanlonlab/shift-python/wiki
-
-def cancel_orders(trader, ticker):
-    # cancel all the remaining orders
-    for order in trader.get_waiting_list():
-        if (order.symbol == ticker):
-            trader.submit_cancellation(order)
-            sleep(1)  # the order cancellation needs a little time to go through
+from SHIFT_env import *
+from shift_agent import *
 
 
-def close_positions(trader, ticker):
-    # NOTE: The following orders may not go through if:
-    # 1. You do not have enough buying power to close your short postions. Your strategy should be formulated to ensure this does not happen.
-    # 2. There is not enough liquidity in the market to close your entire position at once. You can avoid this either by formulating your
-    #    strategy to maintain a small position, or by modifying this function to close ur positions in batches of smaller orders.
-
-    # close all positions for given ticker
-    print(f"running close positions function for {ticker}")
-
-    item = trader.get_portfolio_item(ticker)
-
-    # close any long positions
-    long_shares = item.get_long_shares()
-    if long_shares > 0:
-        print(f"market selling because {ticker} long shares = {long_shares}")
-        order = shift.Order(shift.Order.Type.MARKET_SELL,
-                            ticker, int(long_shares/100))  # we divide by 100 because orders are placed for lots of 100 shares
-        trader.submit_order(order)
-        sleep(1)  # we sleep to give time for the order to process
-
-    # close any short positions
-    short_shares = item.get_short_shares()
-    if short_shares > 0:
-        print(f"market buying because {ticker} short shares = {short_shares}")
-        order = shift.Order(shift.Order.Type.MARKET_BUY,
-                            ticker, int(short_shares/100))
-        trader.submit_order(order)
-        sleep(1)
+USING_GAE = False
 
 
-def strategy(trader: shift.Trader, ticker: str, endtime):
-    # NOTE: Unlike the following sample strategy, it is highly reccomended that you track and account for your buying power and
-    # position sizes throughout your algorithm to ensure both that have adequite captial to trade throughout the simulation and
-    # that you are able to close your position at the end of the strategy without incurring major losses.
+def run_episodes(env, agent, total_episodes):
+    for episode_cnt in range(total_episodes):
 
-    initial_pl = trader.get_portfolio_item(ticker).get_realized_pl()
+        # Save weights every 100 episodes
+        if (episode_cnt + 1) % 5 == 0:
+            print("Saving weights at episode", episode_cnt + 1)
+            agent.network.save_weights(agent.weights_path)
+            print("Weights saved.")
 
-    # strategy parameters
-    check_freq = 1
-    order_size = 5  # NOTE: this is 5 lots which is 500 shares.
+        state = agent.reset()
+        env.isBuy = None
+        while env.isBuy is None:
+            env.get_signal()
+        with tf.GradientTape() as tape:
+            for time_step in range(env.remained_time + 1, -1, -1):
+                action, state_value = agent.feed_networks(state)
+                next_state, reward, done, _ = env.step(action)
 
-    # strategy variables
-    best_price = trader.get_best_price(ticker)
-    best_bid = best_price.get_bid_price()
-    best_ask = best_price.get_ask_price()
-    previous_price = (best_bid + best_ask) / 2
+                # if USING_GAE:
+                #     # Calculate TD errors (delta).
+                #     if not done:
+                #         # TODO: test feeding network only once by saving next_action
+                #         _, next_state_value = agent.feed_networks(next_state)
+                #     else:
+                #         next_state_value = 0
+                #     td_error = reward + GAMMA * next_state_value - state_value
+                #     agent.td_error_list.append(td_error)
+                # print("reward_history:", agent.reward_history)
+                # print("sum reward:", sum(agent.reward_history))
+                agent.reward_list.append(reward)
+                state = np.copy(next_state)
+                # print("isbuy: ", env.isBuy)
 
-    while (trader.get_last_trade_time() < endtime):
-        # cancel unfilled orders from previous time-step
-        cancel_orders(trader, ticker)
+                if done or time_step <= 0:
+                    agent.episode_return = sum(agent.reward_list)
+                    print("Episode: #", episode_cnt, " Return: ", agent.episode_return)
+                    # with agent.summary_writer.as_default():
+                    #     tf.summary.scalar('Episode Return', agent.episode_return, step=episode_cnt)
+                    #     tf.summary.scalar('Actor Loss', agent.actor_loss.result(), step=episode_cnt)
+                    #     tf.summary.scalar('Critic Loss', agent.critic_loss.result(), step=episode_cnt)
+                    #     tf.summary.scalar('PPO Loss', agent.training_loss.result(), step=episode_cnt)
+                    #     agent.actor_loss.reset_states()
+                    #     agent.critic_loss.reset_states()
+                    #     agent.training_loss.reset_states()
+                    #     agent.summary_writer.flush()
+                    break
+            # Use TD errors to calculate generalized advantage estimators.
+            if USING_GAE:
+                gae = 0
+                gae_list = []
+                agent.td_error_list.reverse()
+                for delta in agent.td_error_list:
+                    gae = delta + GAMMA * LAMBDA * gae
+                    gae_list.append(gae)
+                agent.td_error_list.reverse()
+                gae_list.reverse()
 
-        # get necessary data
-        best_price = trader.get_best_price(ticker)
-        best_bid = best_price.get_bid_price()
-        best_ask = best_price.get_ask_price()
-        midprice = (best_bid + best_ask) / 2
+                return_list = []
+                for advantage, state_value in zip(gae_list, agent.state_value_list):
+                    return_list.append(advantage + state_value)
+            else:
+                # Calculate the discounted return for each step in the episodic history.
+                return_list = []
+                discounted_sum = 0
+                agent.reward_list.reverse()
+                for r in agent.reward_list:
+                    discounted_sum = r + GAMMA * discounted_sum
+                    return_list.append(discounted_sum)
+                return_list.reverse()
+                agent.reward_list.reverse()
 
-        # place order
-        if (midprice > previous_price):  # price has increased since last timestep
-            # we predict price will continue to go up
-            order = shift.Order(
-                shift.Order.Type.MARKET_BUY, ticker, order_size)
-            trader.submit_order(order)
-        elif (midprice < previous_price):  # price has decreased since last timestep
-            # we predict price will continue to go down
-            order = shift.Order(
-                shift.Order.Type.MARKET_SELL, ticker, order_size)
-            trader.submit_order(order)
+            # # Convert the discounted returns into standard scores.
+            # print("return_list: ", return_list)
+            # # Calculate mean and standard deviation
+            # mean = tf.reduce_mean(return_list)
+            # std = tf.math.reduce_std(return_list) + 1e-10
+            #
+            # # Normalize
+            # return_list = (return_list - mean) / std
+            # #return_list = return_list.tolist()
 
-            # NOTE: If you place a sell order larger than your current long position, it will result in a short sale, which
-            # requires buying power both for the initial short_sale and to close your short position.For example, if we short
-            # sell 1 lot of a stock trading at $100, it will consume 100*100 = $10000 of our buying power. Then, in order to
-            # close that position, assuming the price has not changed, it will require another $10000 of buying power, after
-            # which our pre short-sale buying power will be restored, minus any transaction costs. Therefore, it requires
-            # double the buying power to open and close a short position than a long position.
+            # Calculate the loss.
+            actor_object_list = agent.neg_action_prob_ratio_list
+            # TODO: Test more into the effects of GAE.
+            if USING_GAE:
+                history = zip(agent.state_value_list, actor_object_list, return_list, gae_list)
+                actor_losses = []
+                critic_losses = []
 
-        previous_price = midprice
-        sleep(check_freq)
+                for state_value, actor_object, ret, gae in history:
+                    advantage = gae
 
-    # cancel unfilled orders and close positions for this ticker
-    cancel_orders(trader, ticker)
-    close_positions(trader, ticker)
+                    clipped_actor_object = tf.clip_by_value(actor_object, 1.0 - CLIP_RANGE, 1.0 + CLIP_RANGE)
+                    actor_loss = tf.maximum(actor_object * advantage, clipped_actor_object * advantage)
+                    agent.actor_loss(actor_loss)
+                    actor_losses.append(actor_loss)
+                    state_value = tf.expand_dims(state_value, 0)
+                    ret = tf.expand_dims(ret, 0)
+                    # Use huber loss rather than MSE loss to improve stability.
+                    critic_loss = agent.huber_loss(state_value, ret)
+                    agent.critic_loss(critic_loss)
+                    critic_losses.append(critic_loss)
+            else:
+                history = zip(agent.state_value_list, actor_object_list, return_list)
+                actor_losses = []
+                critic_losses = []
 
-    print(
-        f"total profits/losses for {ticker}: {trader.get_portfolio_item(ticker).get_realized_pl() - initial_pl}")
+                for state_value, actor_object, ret in history:
+                    # Each of the return minus the estimated state value gives
+                    # the estimated advantage of taking the action in the state.
+                    advantage = ret - state_value
 
+                    clipped_actor_object = tf.clip_by_value(actor_object, 1.0 - CLIP_RANGE, 1.0 + CLIP_RANGE)
+                    actor_loss = tf.maximum(actor_object * advantage, clipped_actor_object * advantage)
+                    agent.actor_loss(actor_loss)
+                    actor_losses.append(actor_loss)
+                    state_value = tf.expand_dims(state_value, 0)
+                    ret = tf.expand_dims(ret, 0)
+                    # Use huber loss rather than MSE loss to improve stability.
+                    critic_loss = agent.huber_loss(state_value, ret)
+                    agent.critic_loss(critic_loss)
+                    critic_losses.append(critic_loss)
 
-def main(trader):
-    # keeps track of times for the simulation
-    check_frequency = 60
-    current = trader.get_last_trade_time()
-    # start_time = datetime.combine(current, dt.time(9, 30, 0))
-    # end_time = datetime.combine(current, dt.time(15, 50, 0))
-    start_time = current
-    end_time = start_time + timedelta(minutes=3)
+            # loss = \
+            #     sum(actor_losses) \
+            #     + VF_COEFFICIENT * sum(critic_losses) \
+            #     - ENTROPY_COEFFICIENT * sum(agent.policy_entropy_list)
+            loss = \
+                tf.reduce_mean(actor_losses) \
+                + VF_COEFFICIENT * tf.reduce_mean(critic_losses) \
+                - ENTROPY_COEFFICIENT * tf.reduce_mean(agent.policy_entropy_list)
+            # print("loss = ", loss)
+            agent.training_loss(loss)
 
-    while trader.get_last_trade_time() < start_time:
-        print("still waiting for market open")
-        sleep(check_frequency)
+        # Calculate the gradients but not apply gradients.
+        grads = tape.gradient(loss, agent.network.trainable_variables)
 
-    # we track our overall initial profits/losses value to see how our strategy affects it
-    initial_pl = trader.get_portfolio_summary().get_total_realized_pl()
+        agent.optimizer.apply_gradients(zip(grads, agent.network.trainable_variables))
 
-    threads = []
-
-    # in this example, we simultaneously and independantly run our trading alogirthm on two tickers
-    tickers = ["AAPL", "MSFT"]
-
-    print("START")
-
-    for ticker in tickers:
-        # initializes threads containing the strategy for each ticker
-        threads.append(
-            Thread(target=crossover_strategy, args=(trader, ticker, end_time)))
-
-    for thread in threads:
-        thread.start()
-        sleep(1)
-
-    # wait until endtime is reached
-    while trader.get_last_trade_time() < end_time:
-        sleep(check_frequency)
-
-    # wait for all threads to finish
-    for thread in threads:
-        # NOTE: this method can stall your program indefinitely if your strategy does not terminate naturally
-        # setting the timeout argument for join() can prevent this
-        thread.join()
-
-    # converts a limit order into a cancel order, and submits it to the server
-    trader.cancel_all_pending_orders()
-
-    # make sure all remaining orders have been cancelled and all positions have been closed
-    for ticker in tickers:
-        cancel_orders(trader, ticker)
-        close_positions(trader, ticker)
-
-    print("END")
-    print(f"final bp: {trader.get_portfolio_summary().get_total_bp()}")
-    print(
-        f"final profits/losses: {trader.get_portfolio_summary().get_total_realized_pl() - initial_pl}")
+            # agent.action_prob_history.clear()
+            # agent.state_value_history.clear()
+            # agent.reward_history.clear()
+        # print("\n---------------------------------------------\n")
+    env.close_positions()
+    env.cancel_orders()
+    env.getSummary()
+    sleep(3)
 
 
 if __name__ == '__main__':
-    with shift.Trader("algoagent_test004") as trader:
+    with shift.Trader("algoagent") as trader:
         trader.connect("initiator.cfg", "x6QYVYRT")
         sleep(1)
         trader.sub_all_order_book()
         sleep(1)
 
-        main(trader)
+        env = SHIFT_env(trader, 0.1, 1, 5, 'AAPL', 0.003, 5, 1)
+        agent = PPOActorCritic(env)
+
+        TOTAL_EPISODES = 10000
+        run_episodes(env, agent, TOTAL_EPISODES)
+
+        env.kill_thread()
+        trader.disconnect()
