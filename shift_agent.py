@@ -74,23 +74,17 @@ class PPOActorCritic:
         state_input = Input(shape=STATE_SHAPE)
         common = Dense(128, activation='relu')(state_input)
 
-        # New: Add a separate input for spread
-        spread_input = Input(shape=(1,))
-        # Use `spread_input` to compute dynamic clipping ranges
-        dynamic_clip_min = -tf.abs(spread_input)
-        dynamic_clip_max = tf.abs(spread_input)
+        dynamic_clip_min = 0.001
+        dynamic_clip_max = 1
 
-        action_mean = Dense(len(self.actions), activation=None)(common)
-        # Apply dynamic clipping
-        action_mean = tf.clip_by_value(action_mean, dynamic_clip_min, dynamic_clip_max)
+        action_mean = Dense(len(self.actions), activation="tanh")(common)
 
-        action_std_pre_activation = Dense(len(self.actions))(common)
-        action_std = tf.math.softplus(action_std_pre_activation) + 0.1
-        action_std = tf.clip_by_value(action_std, clip_value_min=0.1*spread_input, clip_value_max=1.0*spread_input)
+        action_std= Dense(len(self.actions), activation="softplus")(common)
+        action_std = tf.clip_by_value(action_std, clip_value_min=dynamic_clip_min, clip_value_max=dynamic_clip_max)
         state_value = Dense(1)(common)
 
         # Include `spread_input` in the model inputs
-        network = tf.keras.Model(inputs=[state_input, spread_input], outputs=[action_mean, action_std, state_value])
+        network = tf.keras.Model(inputs=state_input, outputs=[action_mean, action_std, state_value])
 
         return network
 
@@ -121,14 +115,13 @@ class PPOActorCritic:
         :param state:
         :return: selected action, estimated state value
         """
-        # Assuming `state` is a numpy array or a list with the spread as the first element
-        spread = state[0]
+
         # Convert state to tensor and process as before
         state = tf.convert_to_tensor(state)
         state = tf.expand_dims(state, 0)
 
         # Now pass `spread` alongside state to the network, and modify the network to accept and use it.
-        action_mean, action_std, state_value = self.network([state, spread])
+        action_mean, action_std, state_value = self.network(state)
 
         #print("action_mean", action_mean, "action_std", action_std)
         #action_std = tf.constant([1] * len(self.actions))  # Example std dev, could be part of your model
@@ -142,7 +135,7 @@ class PPOActorCritic:
         self.action_neg_log_prob_list.append(-action_log_prob)
         self.state_value_list.append(state_value)
 
-        old_action_mean, old_action_std, old_state_value = self.old_network([state, spread])
+        old_action_mean, old_action_std, old_state_value = self.old_network(state)
 
         # Create a distribution for the old policy
         old_normal_dist = tfp.distributions.Normal(old_action_mean, old_action_std)

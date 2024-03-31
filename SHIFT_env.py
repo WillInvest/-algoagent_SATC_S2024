@@ -8,6 +8,8 @@ from tensorflow.keras.utils import Progbar
 from shift_agent import *
 
 
+
+
 class CirList:
     def __init__(self, length):
         self.size = length
@@ -86,7 +88,7 @@ class SHIFT_env:
 
         print('Waiting for connection', end='')
         for _ in range(5):
-            time.sleep(1)
+            time.sleep(0.1)
             print('.', end='')
         print()
 
@@ -116,6 +118,7 @@ class SHIFT_env:
     def get_signal(self):
         mid_price = []
         tab = self.priceTable
+        #print("tab:", tab)
         if tab.isFull():
             for ele in tab.getData():
                 mid_price.append(ele)
@@ -127,8 +130,16 @@ class SHIFT_env:
 
     def _link(self):
         while self.trader.is_connected() and self.thread_alive:
-            last_price = self.trader.get_best_price("AAPL").get_bid_price()
-            self.priceTable.insertData(last_price)
+            bp = self.trader.get_best_price(self.symbol)
+            # last_price = (bp.get_bid_price() + bp.get_ask_price())/2
+            best_bid = bp.get_global_bid_price()
+            best_ask = bp.get_global_ask_price()
+            #print("ticker: ", self.symbol, "best ask: ", best_ask, "best bid: ", best_bid)
+            best_size = bp.get_global_bid_size()
+            last_price = self.trader.get_last_price(self.symbol)
+            last_size = self.trader.get_last_size(self.symbol)
+
+            self.priceTable.insertData((best_ask + best_bid) / 2)
             # Update order book data
             Ask_ls = self.trader.get_order_book(self.symbol, shift.OrderBookType.GLOBAL_ASK, self.ODBK_range)
             Bid_ls = self.trader.get_order_book(self.symbol, shift.OrderBookType.GLOBAL_BID, self.ODBK_range)
@@ -140,7 +151,7 @@ class SHIFT_env:
         premium = action
         signBuy = 1 if self.isBuy else -1
         if self.remained_share == 0:
-            base_price = self.trader.get_best_price("AAPL").get_bid_price()
+            base_price = self.trader.get_best_price(self.symbol).get_bid_price()
         else:
             base_price = self._getClosePrice(self.remained_share)
         obj_price = base_price - signBuy * premium
@@ -398,25 +409,170 @@ class SHIFT_env:
 
 
 
+def run_episodes(env, agent, total_episodes):
+    for episode_cnt in range(total_episodes):
+
+        # Save weights every 100 episodes
+        if (episode_cnt + 1) % 20 == 0:
+            print("Saving weights at episode", episode_cnt + 1)
+            agent.network.save_weights(agent.weights_path)
+            print("Weights saved.")
+
+        state = agent.reset()
+        env.isBuy = None
+        while env.isBuy is None:
+            env.get_signal()
+        with tf.GradientTape() as tape:
+            for time_step in range(env.remained_time + 1, -1, -1):
+                action, state_value = agent.feed_networks(state)
+                next_state, reward, done, _ = env.step(action)
+
+                # if USING_GAE:
+                #     # Calculate TD errors (delta).
+                #     if not done:
+                #         # TODO: test feeding network only once by saving next_action
+                #         _, next_state_value = agent.feed_networks(next_state)
+                #     else:
+                #         next_state_value = 0
+                #     td_error = reward + GAMMA * next_state_value - state_value
+                #     agent.td_error_list.append(td_error)
+                # print("reward_history:", agent.reward_history)
+                # print("sum reward:", sum(agent.reward_history))
+                agent.reward_list.append(reward)
+                state = np.copy(next_state)
+                # print("isbuy: ", env.isBuy)
+
+                if done or time_step <= 0:
+                    agent.episode_return = sum(agent.reward_list)
+                    print("Episode: #", episode_cnt, " Return: ", agent.episode_return)
+                    break
+
+            # Use TD errors to calculate generalized advantage estimators.
+            if USING_GAE:
+                gae = 0
+                gae_list = []
+                agent.td_error_list.reverse()
+                for delta in agent.td_error_list:
+                    gae = delta + GAMMA * LAMBDA * gae
+                    gae_list.append(gae)
+                agent.td_error_list.reverse()
+                gae_list.reverse()
+
+                return_list = []
+                for advantage, state_value in zip(gae_list, agent.state_value_list):
+                    return_list.append(advantage + state_value)
+            else:
+                # Calculate the discounted return for each step in the episodic history.
+                return_list = []
+                discounted_sum = 0
+                agent.reward_list.reverse()
+                for r in agent.reward_list:
+                    discounted_sum = r + GAMMA * discounted_sum
+                    return_list.append(discounted_sum)
+                return_list.reverse()
+                agent.reward_list.reverse()
+
+            # # Convert the discounted returns into standard scores.
+            # print("return_list: ", return_list)
+            # # Calculate mean and standard deviation
+            # mean = tf.reduce_mean(return_list)
+            # std = tf.math.reduce_std(return_list) + 1e-10
+            #
+            # # Normalize
+            # return_list = (return_list - mean) / std
+            # #return_list = return_list.tolist()
+
+            # Calculate the loss.
+            actor_object_list = agent.neg_action_prob_ratio_list
+            # TODO: Test more into the effects of GAE.
+            if USING_GAE:
+                history = zip(agent.state_value_list, actor_object_list, return_list, gae_list)
+                actor_losses = []
+                critic_losses = []
+
+                for state_value, actor_object, ret, gae in history:
+                    advantage = gae
+
+                    clipped_actor_object = tf.clip_by_value(actor_object, 1.0 - CLIP_RANGE, 1.0 + CLIP_RANGE)
+                    actor_loss = tf.maximum(actor_object * advantage, clipped_actor_object * advantage)
+                    agent.actor_loss(actor_loss)
+                    actor_losses.append(actor_loss)
+                    state_value = tf.expand_dims(state_value, 0)
+                    ret = tf.expand_dims(ret, 0)
+                    # Use huber loss rather than MSE loss to improve stability.
+                    critic_loss = agent.huber_loss(state_value, ret)
+                    agent.critic_loss(critic_loss)
+                    critic_losses.append(critic_loss)
+            else:
+                history = zip(agent.state_value_list, actor_object_list, return_list)
+                actor_losses = []
+                critic_losses = []
+
+                for state_value, actor_object, ret in history:
+                    # Each of the return minus the estimated state value gives
+                    # the estimated advantage of taking the action in the state.
+                    advantage = ret - state_value
+
+                    clipped_actor_object = tf.clip_by_value(actor_object, 1.0 - CLIP_RANGE, 1.0 + CLIP_RANGE)
+                    actor_loss = tf.maximum(actor_object * advantage, clipped_actor_object * advantage)
+                    agent.actor_loss(actor_loss)
+                    actor_losses.append(actor_loss)
+                    state_value = tf.expand_dims(state_value, 0)
+                    ret = tf.expand_dims(ret, 0)
+                    # Use huber loss rather than MSE loss to improve stability.
+                    critic_loss = agent.huber_loss(state_value, ret)
+                    agent.critic_loss(critic_loss)
+                    critic_losses.append(critic_loss)
+
+            loss = \
+                tf.reduce_mean(actor_losses) \
+                + VF_COEFFICIENT * tf.reduce_mean(critic_losses) \
+                - ENTROPY_COEFFICIENT * tf.reduce_mean(agent.policy_entropy_list)
+
+            #print("actor loss: ", tf.reduce_mean(actor_losses))
+            #print("critic loss: ", VF_COEFFICIENT * tf.reduce_mean(critic_losses))
+            #print("Entropy gain: ", ENTROPY_COEFFICIENT * tf.reduce_mean(agent.policy_entropy_list))
+            #print("total loss: ", loss)
+            # print("loss = ", loss)
+            agent.training_loss(loss)
+
+        # Compute gradients
+        grads = tape.gradient(loss, agent.network.trainable_variables)
+        # for grad, var in zip(grads, agent.network.trainable_variables):
+        #     tf.print(f"Gradient for {var.name}: {tf.norm(grad)}")
+
+        # Clip gradients by value
+        clipped_gradients = [tf.clip_by_value(grad, clip_value_min=-1.0, clip_value_max=1.0) for grad in grads]
+        # for grad, var in zip(clipped_gradients, agent.network.trainable_variables):
+        #     tf.print(f"Clipped Gradient for {var.name}: {tf.norm(grad)}")
+
+        # Apply clipped gradients
+        agent.optimizer.apply_gradients(zip(clipped_gradients, agent.network.trainable_variables))
+
+        # print("\n---------------------------------------------\n")
+    env.close_positions()
+    env.cancel_orders()
+    env.getSummary()
+    sleep(3)
 
 
 
-# if __name__ == '__main__':
-#     with shift.Trader("algoagent") as trader:
-#         trader.connect("initiator.cfg", "x6QYVYRT")
-#         sleep(1)  # Ensure connection is established
-#         trader.sub_all_order_book()
-#         sleep(1)
-#
-#
-#         env = SHIFT_env(trader, 0.1, 1, 5, 'AAPL', 0.003, 10, 1)
-#         agent = PPOActorCritic(env)
-#
-#         env.cancel_orders()
-#         env.close_positions()
-#
-#         TOTAL_EPISODES = 20
-#         run_episodes(env, agent, TOTAL_EPISODES)
-#
-#         env.kill_thread()
-#         trader.disconnect()
+
+if __name__ == '__main__':
+    with shift.Trader("algoagent") as trader:
+        trader.connect("initiator.cfg", "x6QYVYRT")
+        sleep(1)  # Ensure connection is established
+        trader.sub_all_order_book()
+        sleep(1)
+
+        env = SHIFT_env(trader, 0.1, 1, 5, 'AAPL', 0.003, 10, 1)
+        agent = PPOActorCritic(env)
+
+        env.cancel_orders()
+        env.close_positions()
+
+        TOTAL_EPISODES = 20
+        run_episodes(env, agent, TOTAL_EPISODES)
+
+        env.kill_thread()
+        trader.disconnect()
