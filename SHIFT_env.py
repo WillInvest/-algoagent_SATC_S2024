@@ -129,6 +129,7 @@ class SHIFT_env:
 
             bp = self.trader.get_best_price(self.symbol)
             best_bid = bp.get_global_bid_price()
+            print(f"{self.symbol} best_bid {best_bid}")
             best_ask = bp.get_global_ask_price()
             last_price = self.trader.get_last_price(self.symbol)
             self.priceTable.insertData((best_ask + best_bid) / 2)
