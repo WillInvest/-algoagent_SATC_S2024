@@ -12,12 +12,14 @@ def run_episodes(env, agent, total_episodes, ticker, lock, gradient_list, barrie
 
         timeout = False
         current_time = datetime.datetime.now()
+        env.isBuy = None
         state = agent.reset()
 
         while env.isBuy is None:
             env.get_signal()
-            if (datetime.datetime.now() - current_time).total_seconds() > 3:
+            if (datetime.datetime.now() - current_time).total_seconds() > 1:
                 timeout = True
+                env.set_objective(0, 5)
                 break
 
         with tf.GradientTape() as tape:
@@ -179,7 +181,7 @@ def close_positions(trader, ticker):
 
 
 def strategy(trader: shift.Trader, ticker: str, total_episode, gradient_lock, gradient_list, barrier):
-    env = SHIFT_env(trader, 0.1, 1, 5, ticker, 0.003, 5, 1)
+    env = SHIFT_env(trader, 0.5, 1, 5, ticker, 0.003, 5, 1)
     agent = PPOActorCritic(env)
     initial_pl = trader.get_portfolio_item(ticker).get_realized_pl()
     run_episodes(env, agent, total_episode, ticker, gradient_lock, gradient_list, barrier)
@@ -194,14 +196,9 @@ def main(trader, episode):
     initial_pl = trader.get_portfolio_summary().get_total_realized_pl()
 
     # create tickers
-    tickers = trader.get_stock_list()
-
+    #tickers = ['AAPL']
     #tickers = ["AAPL", "MSFT", "JNJ", "BA", "IBM"]
-    # tickers = ['AAPL', 'AXP', 'BA', 'CAT', 'CSCO', 'CVX', 'DIA',
-    #            'DIS', 'DOW', 'GS', 'HD', 'IBM', 'INTC', 'JNJ',
-    #            'JPM', 'KO', 'MCD', 'MMM', 'MRK', 'MSFT', 'NKE',
-    #            'PFE', 'PG', 'RTX', 'SPY', 'TRV', 'UNH', 'V', 'VZ',
-    #            'WBA', 'WMT', 'XOM']
+    tickers = trader.get_stock_list()
 
     manager = Manager()
     gradient_list = manager.list()
@@ -248,7 +245,7 @@ if __name__ == '__main__':
         trader.sub_all_order_book()
         sleep(1)
 
-        episode = 10000
+        episode = 20
 
         main(trader, episode)
         trader.disconnect()
