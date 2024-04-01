@@ -8,8 +8,6 @@ from tensorflow.keras.utils import Progbar
 from shift_agent import *
 
 
-
-
 class CirList:
     def __init__(self, length):
         self.size = length
@@ -86,11 +84,11 @@ class SHIFT_env:
         self.table = CirList(nTimeStep)
         self.priceTable = CirList(2)
 
-        print('Waiting for connection', end='')
-        for _ in range(5):
-            time.sleep(0.1)
-            print('.', end='')
-        print()
+        # print('Waiting for connection', end='')
+        # for _ in range(5):
+        #     time.sleep(0.1)
+        #     print('.', end='')
+        # print()
 
         self.thread_alive = True
         self.dataThread.start()
@@ -118,7 +116,6 @@ class SHIFT_env:
     def get_signal(self):
         mid_price = []
         tab = self.priceTable
-        #print("tab:", tab)
         if tab.isFull():
             for ele in tab.getData():
                 mid_price.append(ele)
@@ -127,25 +124,23 @@ class SHIFT_env:
             if mid_price[-1] < mid_price[0]:
                 self.set_objective(-self.target_shares, self.time_steps)
 
-
     def _link(self):
         while self.trader.is_connected() and self.thread_alive:
-            bp = self.trader.get_best_price(self.symbol)
-            # last_price = (bp.get_bid_price() + bp.get_ask_price())/2
-            best_bid = bp.get_global_bid_price()
-            best_ask = bp.get_global_ask_price()
-            #print("ticker: ", self.symbol, "best ask: ", best_ask, "best bid: ", best_bid)
-            best_size = bp.get_global_bid_size()
-            last_price = self.trader.get_last_price(self.symbol)
-            last_size = self.trader.get_last_size(self.symbol)
+            try:
+                bp = self.trader.get_best_price(self.symbol)
+                best_bid = bp.get_global_bid_price()
+                best_ask = bp.get_global_ask_price()
+                last_price = self.trader.get_last_price(self.symbol)
+                self.priceTable.insertData((best_ask + best_bid) / 2)
+                # Update order book data
+                Ask_ls = self.trader.get_order_book(self.symbol, shift.OrderBookType.GLOBAL_ASK, self.ODBK_range)
+                Bid_ls = self.trader.get_order_book(self.symbol, shift.OrderBookType.GLOBAL_BID, self.ODBK_range)
+                orders = OrderBook(Ask_ls, Bid_ls, last_price)
+                self.table.insertData(orders)
+                time.sleep(self.timeInterval)
 
-            self.priceTable.insertData((best_ask + best_bid) / 2)
-            # Update order book data
-            Ask_ls = self.trader.get_order_book(self.symbol, shift.OrderBookType.GLOBAL_ASK, self.ODBK_range)
-            Bid_ls = self.trader.get_order_book(self.symbol, shift.OrderBookType.GLOBAL_BID, self.ODBK_range)
-            orders = OrderBook(Ask_ls, Bid_ls, last_price)
-            self.table.insertData(orders)
-            time.sleep(self.timeInterval)
+            except Exception as e:
+                print(f"Error getting best price for {self.symbol}: {e}")
 
     def step(self, action):
         premium = action
@@ -186,7 +181,10 @@ class SHIFT_env:
         if status == shift.Order.Type.MARKET_BUY or status == shift.Order.Type.MARKET_SELL:
             reward = -2.0
         else:
-            reward = (exec_share + self.remained_share) * premium
+            if exec_share > 0:
+                reward = exec_share * premium + 1
+            else:
+                reward = -1
 
         if self.remained_share == 0:
             done = True
@@ -345,8 +343,9 @@ class SHIFT_env:
 
     @staticmethod
     def _mid_price(df, n_ask):
-        mid_price = (df.price[n_ask - 1] + df.price[n_ask])/2
+        mid_price = (df.price[n_ask - 1] + df.price[n_ask]) / 2
         return mid_price
+
     @staticmethod
     def _ba_spread(df, n_ask):
         spread = df.price[n_ask - 1] - df.price[n_ask]
@@ -406,7 +405,6 @@ class SHIFT_env:
 
     def __del__(self):
         self.kill_thread()
-
 
 
 def run_episodes(env, agent, total_episodes):
@@ -529,10 +527,10 @@ def run_episodes(env, agent, total_episodes):
                 + VF_COEFFICIENT * tf.reduce_mean(critic_losses) \
                 - ENTROPY_COEFFICIENT * tf.reduce_mean(agent.policy_entropy_list)
 
-            #print("actor loss: ", tf.reduce_mean(actor_losses))
-            #print("critic loss: ", VF_COEFFICIENT * tf.reduce_mean(critic_losses))
-            #print("Entropy gain: ", ENTROPY_COEFFICIENT * tf.reduce_mean(agent.policy_entropy_list))
-            #print("total loss: ", loss)
+            # print("actor loss: ", tf.reduce_mean(actor_losses))
+            # print("critic loss: ", VF_COEFFICIENT * tf.reduce_mean(critic_losses))
+            # print("Entropy gain: ", ENTROPY_COEFFICIENT * tf.reduce_mean(agent.policy_entropy_list))
+            # print("total loss: ", loss)
             # print("loss = ", loss)
             agent.training_loss(loss)
 
@@ -554,8 +552,6 @@ def run_episodes(env, agent, total_episodes):
     env.cancel_orders()
     env.getSummary()
     sleep(3)
-
-
 
 
 if __name__ == '__main__':

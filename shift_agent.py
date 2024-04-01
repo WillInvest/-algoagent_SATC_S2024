@@ -65,9 +65,11 @@ class PPOActorCritic:
 
         # Load weights if they exist
         if os.path.exists(self.weights_path):
-            print("Loading existing weights.")
+            #print("Loading existing weights.")
             self.network.load_weights(self.weights_path)
             self.old_network.set_weights(self.network.get_weights())
+        else:
+            self.network.save_weights(self.weights_path)
 
     def _build_network(self):
         # Original state input
