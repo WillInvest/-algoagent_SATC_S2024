@@ -126,21 +126,19 @@ class SHIFT_env:
 
     def _link(self):
         while self.trader.is_connected() and self.thread_alive:
-            try:
-                bp = self.trader.get_best_price(self.symbol)
-                best_bid = bp.get_global_bid_price()
-                best_ask = bp.get_global_ask_price()
-                last_price = self.trader.get_last_price(self.symbol)
-                self.priceTable.insertData((best_ask + best_bid) / 2)
-                # Update order book data
-                Ask_ls = self.trader.get_order_book(self.symbol, shift.OrderBookType.GLOBAL_ASK, self.ODBK_range)
-                Bid_ls = self.trader.get_order_book(self.symbol, shift.OrderBookType.GLOBAL_BID, self.ODBK_range)
-                orders = OrderBook(Ask_ls, Bid_ls, last_price)
-                self.table.insertData(orders)
-                time.sleep(self.timeInterval)
 
-            except Exception as e:
-                print(f"Error getting best price for {self.symbol}: {e}")
+            bp = self.trader.get_best_price(self.symbol)
+            best_bid = bp.get_global_bid_price()
+            best_ask = bp.get_global_ask_price()
+            last_price = self.trader.get_last_price(self.symbol)
+            self.priceTable.insertData((best_ask + best_bid) / 2)
+            # Update order book data
+            Ask_ls = self.trader.get_order_book(self.symbol, shift.OrderBookType.GLOBAL_ASK, self.ODBK_range)
+            Bid_ls = self.trader.get_order_book(self.symbol, shift.OrderBookType.GLOBAL_BID, self.ODBK_range)
+            orders = OrderBook(Ask_ls, Bid_ls, last_price)
+            self.table.insertData(orders)
+            time.sleep(self.timeInterval)
+
 
     def step(self, action):
         premium = action
