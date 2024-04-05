@@ -6,6 +6,8 @@ import time
 from time import sleep
 from tensorflow.keras.utils import Progbar
 from shift_agent import *
+from datetime import datetime
+from multiprocessing import Process, Manager, Barrier, Lock
 
 
 class CirList:
@@ -84,21 +86,16 @@ class SHIFT_env:
         self.table = CirList(nTimeStep)
         self.priceTable = CirList(2)
 
-        # print('Waiting for connection', end='')
-        # for _ in range(5):
-        #     time.sleep(0.1)
-        #     print('.', end='')
-        # print()
-
         self.thread_alive = True
         self.dataThread.start()
 
         self.remained_share = 0
         self.isBuy = None
         self.remained_time = 5
-        self.initial_pl = self.trader.get_portfolio_item(self.symbol).get_realized_pl()
         self.time_steps = time_steps
         self.target_shares = target_shares
+
+        self.endTime = datetime.strptime('15:55', '%H:%M').time()
 
     def set_objective(self, share, remained_time):
         self.remained_time = remained_time
@@ -115,22 +112,35 @@ class SHIFT_env:
 
     def get_signal(self):
         mid_price = []
+        item = self.trader.get_portfolio_item(self.symbol)
+        long_shares = item.get_long_shares()
+        short_shares = item.get_short_shares()
         tab = self.priceTable
         if tab.isFull():
             for ele in tab.getData():
                 mid_price.append(ele)
-            if mid_price[-1] > mid_price[0]:
-                self.set_objective(self.target_shares, self.time_steps)
-            if mid_price[-1] < mid_price[0]:
-                self.set_objective(-self.target_shares, self.time_steps)
+                # print(f"{self.symbol} mid price table {mid_price}")
+            if self.trader.get_last_trade_time().time() > self.endTime:
+                # close all positions for given ticker
+                # close any long positions
+                if long_shares > 0 and mid_price[-1] < mid_price[0]:
+                    # print(f"limit selling because {self.symbol} long shares = {long_shares}")
+                    self.set_objective(-self.target_shares, self.time_steps)
+                # close any short positions
+                if short_shares > 0 and mid_price[-1] > mid_price[0]:
+                    # print(f"limit buying because {self.symbol} short shares = {short_shares}")
+                    self.set_objective(self.target_shares, self.time_steps)
+            else:
+                if long_shares < 1000 and mid_price[-1] > mid_price[0]:
+                    self.set_objective(self.target_shares, self.time_steps)
+                if short_shares < 1000 and mid_price[-1] < mid_price[0]:
+                    self.set_objective(-self.target_shares, self.time_steps)
 
     def _link(self):
         while self.trader.is_connected() and self.thread_alive:
-
             bp = self.trader.get_best_price(self.symbol)
-            best_bid = bp.get_global_bid_price()
-            print(f"{self.symbol} best_bid {best_bid}")
-            best_ask = bp.get_global_ask_price()
+            best_bid = bp.get_bid_price()
+            best_ask = bp.get_ask_price()
             last_price = self.trader.get_last_price(self.symbol)
             self.priceTable.insertData((best_ask + best_bid) / 2)
             # Update order book data
@@ -138,16 +148,19 @@ class SHIFT_env:
             Bid_ls = self.trader.get_order_book(self.symbol, shift.OrderBookType.GLOBAL_BID, self.ODBK_range)
             orders = OrderBook(Ask_ls, Bid_ls, last_price)
             self.table.insertData(orders)
-            time.sleep(self.timeInterval)
-
+            time.sleep(1)
 
     def step(self, action):
         premium = action
+        trade_time = self.trader.get_last_trade_time().time()
+        initial_short = self.trader.get_portfolio_item(self.symbol).get_short_shares()
+        initial_long = self.trader.get_portfolio_item(self.symbol).get_long_shares()
+        print("\n-------------------------------------------------")
+        print(f"{self.symbol} : Initial Short: {initial_short} | Initial Long: {initial_long}")
+
         signBuy = 1 if self.isBuy else -1
-        if self.remained_share == 0:
-            base_price = self.trader.get_best_price(self.symbol).get_bid_price()
-        else:
-            base_price = self._getClosePrice(self.remained_share)
+
+        base_price = self._getClosePrice(self.remained_share)
         obj_price = base_price - signBuy * premium
 
         if self.remained_time > 0:
@@ -158,118 +171,67 @@ class SHIFT_env:
         order = shift.Order(orderType, self.symbol, self.remained_share, obj_price)
         # Corrected method name for submitting order
         self.trader.submit_order(order)
-        time.sleep(self.timeInterval)
 
-        if self.trader.get_waiting_list_size() > 0:
-            if order.type == shift.Order.LIMIT_BUY:
-                order.type = shift.Order.CANCEL_BID
-            else:
-                order.type = shift.Order.CANCEL_ASK
-            self.trader.submit_order(order)
-            exec_share = self.remained_share - order.size
-            self.remained_share = order.size
+        if premium > 0:
+            time.sleep(self.timeInterval * 5)
         else:
-            exec_share = self.remained_share
-            self.remained_share = 0
+            time.sleep(self.timeInterval)
 
-        # Define reward
-        done = False
+        self.trader.cancel_all_pending_orders()
+        for order in self.trader.get_waiting_list():
+            self.trader.submit_cancellation(order)
+
+        print(f"{self.symbol} : premium: {premium}, signBuy: {signBuy}, obj_price: {obj_price},"
+              f"base_price : {base_price}"
+              f" orderType: {self.trader.get_submitted_orders()[-1].type}, ")
+
+        post_short = self.trader.get_portfolio_item(self.symbol).get_short_shares()
+        post_long = self.trader.get_portfolio_item(self.symbol).get_long_shares()
+
+        if signBuy == 1:
+            exec_share = (post_long + initial_short) - (initial_long + post_short)
+            done = exec_share == self.remained_share * 100
+        elif signBuy == -1:
+            exec_share = (initial_long + post_short) - (post_long + initial_short)
+            done = exec_share == self.remained_share * 100
+        else:
+            done = False
+            exec_share = 0
+
+        print(
+            f"{self.symbol} : Post Short: {post_short} | Post Long: {post_long} | exec_share: {exec_share} | done: {done}")
 
         status = self.trader.get_submitted_orders()[-1].type
 
-        if status == shift.Order.Type.MARKET_BUY or status == shift.Order.Type.MARKET_SELL:
-            reward = -2.0
-        else:
-            if exec_share > 0:
-                reward = exec_share * premium + 1
+        if self.remained_time > 0:
+            if premium > 0:
+                if exec_share > 0:
+                    reward = exec_share * premium + exec_share * 0.2
+                else:
+                    reward = -6
             else:
-                reward = -1
+                if exec_share > 0:
+                    reward = exec_share * premium - exec_share * 0.3
+                else:
+                    reward = -6
+        else:
+            reward = exec_share * 0 - exec_share * 0.3
 
-        if self.remained_share == 0:
+        print(f"{self.symbol} : done, {done}, remained_share: {self.remained_share}, reward: {reward}")
+
+        if self.remained_share == 0 or self.remained_time == 0:
             done = True
-
         self.remained_time -= 1
         next_obs = self._get_obs()
         time.sleep(self.timeInterval)
 
-        return next_obs, reward, done, dict()
+        return next_obs, reward, done, dict(), post_long, post_short, trade_time
 
     def _get_obs(self):
         return np.concatenate((self.compute(), np.array([self.remained_share, self.remained_time])))
 
     def _getClosePrice(self, share):
-        return self.trader.get_close_price(self.symbol, self.isBuy, abs(share))
-
-    def _getSubOrder(self):
-        # Get the last 5 orders, or all orders if fewer than 5
-        latest_orders = self.trader.get_submitted_orders()[-5:]
-        for order in latest_orders:
-            if order.status == shift.Order.Status.FILLED:
-                price = order.executed_price
-            else:
-                price = order.price
-            print(
-                "%6s\t%16s\t%7.2f\t\t%4d\t\t%4d\t%23s"
-                % (
-                    order.symbol,
-                    order.type,
-                    price,
-                    order.size,
-                    order.executed_size,
-                    order.status
-                )
-            )
-
-    def getSummary(self):
-        print("Buying Power\tTotal Shares\tTotal P&L\tTimestamp")
-        print(
-            "%12.2f\t%12d\t%9.2f\t%26s"
-            % (
-                self.trader.get_portfolio_summary().get_total_bp(),
-                self.trader.get_portfolio_summary().get_total_shares(),
-                self.trader.get_portfolio_summary().get_total_realized_pl(),
-                self.trader.get_portfolio_summary().get_timestamp(),
-            )
-        )
-
-    def _getWaitingList(self):
-        for order in self.trader.get_waiting_list():
-            print(
-                "%6s\t%16s\t%7.2f\t\t%4d\t\t%4d\t"
-                % (
-                    order.symbol,
-                    order.type,
-                    order.price,
-                    order.size,
-                    order.executed_size
-                )
-            )
-
-    def _getPortfolio(self):
-        print("Buying Power\tTotal Shares\tTotal P&L\tTimestamp")
-        print(
-            "%12.2f\t%12d\t%9.2f\t%26s"
-            % (
-                self.trader.get_portfolio_summary().get_total_bp(),
-                self.trader.get_portfolio_summary().get_total_shares(),
-                self.trader.get_portfolio_summary().get_total_realized_pl(),
-                self.trader.get_portfolio_summary().get_timestamp(),
-            )
-        )
-
-    def _getItems(self):
-        item = self.trader.get_portfolio_item(self.symbol)
-        print("Symbol\t\tShares\t\tPrice\t\tP&L\t\tTimestamp")
-        print(
-            "%6s\t\t%6d\t%9.2f\t%7.2f\t\t%26s"
-            % (
-                item.get_symbol(),
-                item.get_long_shares(),
-                item.get_price(),
-                item.get_realized_pl(),
-                item.get_timestamp(),
-            )
-        )
+        return self.trader.get_close_price(self.symbol, self.isBuy, int(abs(share)))
 
     def cancel_orders(self):
         # cancel all the remaining orders
@@ -279,11 +241,6 @@ class SHIFT_env:
                 sleep(3)  # the order cancellation needs a little time to go through
 
     def close_positions(self):
-        # NOTE: The following orders may not go through if:
-        # 1. You do not have enough buying power to close your short postions. Your strategy should be formulated to ensure this does not happen.
-        # 2. There is not enough liquidity in the market to close your entire position at once. You can avoid this either by formulating your
-        #    strategy to maintain a small position, or by modifying this function to close ur positions in batches of smaller orders.
-
         # close all positions for given ticker
         print(f"running close positions function for {self.symbol}")
 
@@ -405,4 +362,3 @@ class SHIFT_env:
 
     def __del__(self):
         self.kill_thread()
-

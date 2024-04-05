@@ -20,12 +20,13 @@ USING_GAE = False
 
 GAMMA = 0.99
 LAMBDA = 0.95
-CLIP_RANGE = 0.2
-VF_COEFFICIENT = 1.0
-ENTROPY_COEFFICIENT = 0.01
 LEARNING_RATE = 0.01
 STATE_SHAPE = (7,)
-ACTIONS = (1,)
+PREMIUMS = [-3, -2, -1, 1, 2, 3]
+NUM_ACTIONS = len(PREMIUMS)
+decay_rate = 0.995
+
+ACTIONS = (10,)
 
 # Use microseconds as the last section of the log directory name to have different directories for multiprocess workers.
 LOG_DIR = "tensorboard_logs/" + datetime.datetime.now().strftime("%Y%m%d-%H%M%S-%f")
@@ -34,7 +35,7 @@ LOG_DIR = "tensorboard_logs/" + datetime.datetime.now().strftime("%Y%m%d-%H%M%S-
 class PPOActorCritic:
     def __init__(self, environment, learning_rate=LEARNING_RATE):
         self.env = environment
-        self.actions = ACTIONS
+        self.actions = PREMIUMS
         self.network = self._build_network()
         # Clone a network for PPO calculating action probability ratio.
         self.old_network = self._build_network()
@@ -46,9 +47,9 @@ class PPOActorCritic:
         # Lists of Memory/History
         self.state_list = []
         self.state_value_list = []
-        self.action_list = []
-        self.action_neg_log_prob_list = []
-        self.neg_action_prob_ratio_list = []
+        self.old_action_prob_list = []
+        self.action_log_prob_list = []
+        self.prob_ratio_list = []
         self.reward_list = []
         self.td_error_list = []
         self.policy_entropy_list = []
@@ -61,32 +62,13 @@ class PPOActorCritic:
         self.actor_loss = tf.keras.metrics.Mean('Actor_Loss', dtype=tf.float32)
         self.training_loss = tf.keras.metrics.Mean('Training_Loss', dtype=tf.float32)
 
-        self.weights_path = 'ppo_network_weights.h5'  # Define a path for the weights
-
-        # Load weights if they exist
-        if os.path.exists(self.weights_path):
-            #print("Loading existing weights.")
-            self.network.load_weights(self.weights_path)
-            self.old_network.set_weights(self.network.get_weights())
-        else:
-            self.network.save_weights(self.weights_path)
-
     def _build_network(self):
-        # Original state input
-        state_input = Input(shape=STATE_SHAPE)
-        common = Dense(128, activation='relu')(state_input)
-
-        dynamic_clip_min = 0.001
-        dynamic_clip_max = 1
-
-        action_mean = Dense(len(self.actions), activation="tanh")(common)
-
-        action_std= Dense(len(self.actions), activation="softplus")(common)
-        action_std = tf.clip_by_value(action_std, clip_value_min=dynamic_clip_min, clip_value_max=dynamic_clip_max)
+        network_input = Input(shape=STATE_SHAPE)
+        common = Dense(128, activation='relu')(network_input)
+        action_prob = Dense(len(self.actions), activation='softmax')(common)
         state_value = Dense(1)(common)
 
-        # Include `spread_input` in the model inputs
-        network = tf.keras.Model(inputs=state_input, outputs=[action_mean, action_std, state_value])
+        network = tf.keras.Model(inputs=network_input, outputs=[action_prob, state_value])
 
         return network
 
@@ -99,9 +81,9 @@ class PPOActorCritic:
         state = self.env.reset()
 
         self.state_list.clear()
-        self.action_list.clear()
-        self.action_neg_log_prob_list.clear()
-        self.neg_action_prob_ratio_list.clear()
+        self.old_action_prob_list.clear()
+        self.action_log_prob_list.clear()
+        self.prob_ratio_list.clear()
         self.state_value_list.clear()
         self.reward_list.clear()
         self.td_error_list.clear()
@@ -110,48 +92,32 @@ class PPOActorCritic:
         return state
 
     def feed_networks(self, state):
-        """
-        This takes in a state observation and outputs an action which is what a policy function does.
-        In addition, this returns a estimation of the state value mainly because we combined the actor
-        and the critic network.
-        :param state:
-        :return: selected action, estimated state value
-        """
-
-        # Convert state to tensor and process as before
         state = tf.convert_to_tensor(state)
+        # Add the first dimension of the batch size.
         state = tf.expand_dims(state, 0)
 
-        # Now pass `spread` alongside state to the network, and modify the network to accept and use it.
-        action_mean, action_std, state_value = self.network(state)
+        action_prob_array, state_value = self.network(state)
+        action_prob_array = action_prob_array + 1e-10
+        selected_action_index = np.random.choice(len(self.actions), p=np.squeeze(action_prob_array))
+        action = self.actions[selected_action_index]
+        action_prob = action_prob_array[0][selected_action_index]
+        action_log_prob = tf.math.log(action_prob)
 
-        #print("action_mean", action_mean, "action_std", action_std)
-        #action_std = tf.constant([1] * len(self.actions))  # Example std dev, could be part of your model
+        old_action_prob_array, old_state_value = self.old_network(state)
+        old_action_prob_array = old_action_prob_array + 1e-10
+        old_action_prob = old_action_prob_array[0][selected_action_index]
+        old_action_log_prob = tf.math.log(old_action_prob)
 
-        # Create a distribution for the current policy
-        normal_dist = tfp.distributions.Normal(action_mean, action_std)
-        sampled_action = normal_dist.sample()
-        action_log_prob = normal_dist.log_prob(sampled_action) + 1e-10
-        new_action_neg_log_prob = - action_log_prob
-        # Store the log probability of the sampled action for the new policy
-        self.action_neg_log_prob_list.append(-action_log_prob)
+        ratio = tf.math.exp(action_log_prob - old_action_log_prob)
+
+        # Calculate policy entropy for the action distribution
+        action_log_prob_array = tf.math.log(action_prob_array)
+        policy_entropy = - tf.reduce_sum(action_prob_array * action_log_prob_array)
+
+        # Storing necessary values for later loss calculation
+        self.prob_ratio_list.append(ratio)
+        self.old_action_prob_list.append(old_action_prob)
+        self.policy_entropy_list.append(policy_entropy)
         self.state_value_list.append(state_value)
 
-        old_action_mean, old_action_std, old_state_value = self.old_network(state)
-
-        # Create a distribution for the old policy
-        old_normal_dist = tfp.distributions.Normal(old_action_mean, old_action_std)
-        old_sampled_action = old_normal_dist.sample()
-        old_action_log_prob = normal_dist.log_prob(old_sampled_action) + 1e-10
-        old_action_neg_log_prob = - old_action_log_prob
-
-        # e^[-ln(p') + ln(p)] = p/p'
-        ratio = tf.math.exp(old_action_neg_log_prob - new_action_neg_log_prob)
-        # Add negative to convert gradient descent to ascent.
-        self.neg_action_prob_ratio_list.append(- ratio)
-
-        # Store policy entropy
-        policy_entropy = - tf.reduce_sum(tf.math.exp(action_log_prob) * action_log_prob)
-        self.policy_entropy_list.append(policy_entropy)
-
-        return sampled_action, state_value
+        return action, state_value.numpy()
