@@ -10,7 +10,6 @@ LOADING_TRAINED_MODEL = True
 CLIP_RANGE = 0.2
 VF_COEFFICIENT = 1.0
 weights_path = 'ppo_network_weights.h5'  # Define a path for the weights
-#ENTROPY_COEFFICIENT = 0.1  # Starting value
 decay_rate = 0.995
 
 
@@ -98,7 +97,7 @@ def run_episodes(worker_id, env, agent, total_episodes, ticker, lock, gradient_l
                 loss = \
                     tf.reduce_mean(actor_losses) \
                     + VF_COEFFICIENT * tf.reduce_mean(critic_losses) \
-                    - ENTROPY_COEFFICIENT * tf.reduce_mean(agent.policy_entropy_list)
+                    - entropy_coefficient * tf.reduce_mean(agent.policy_entropy_list)
 
                 agent.training_loss(loss)
                 # Compute gradients
