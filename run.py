@@ -26,7 +26,7 @@ def run_episodes(worker_id, env, agent, total_episodes, ticker, lock, gradient_l
 
         entropy_coefficient *= decay_rate
 
-        if episode_cnt % 10 == 0:
+        if episode_cnt % 1 == 0:
             if worker_id == 0:
                 agent.network.save_weights(weights_path)
                 print(f"{episode_cnt} : save weight to {weights_path}")
