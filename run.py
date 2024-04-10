@@ -35,6 +35,7 @@ def run_episodes(worker_id, env, agent, total_episodes, ticker, lock, gradient_l
             agent.network.set_weights(new_weight)
 
         timeout = False
+        loss = None  # Initialize loss as None to handle cases where timeout is True
         current_time = datetime.datetime.now()
         env.isBuy = None
         while env.isBuy is None:
@@ -84,8 +85,7 @@ def run_episodes(worker_id, env, agent, total_episodes, ticker, lock, gradient_l
                 for state_value, actor_object, ret, old_action_prob in history:
                     advantage = ret - state_value
                     clipped_actor_object = tf.clip_by_value(actor_object, 1.0 - CLIP_RANGE, 1.0 + CLIP_RANGE)
-                    mini_object = tf.math.minimum(clipped_actor_object, actor_object)
-                    actor_loss = -tf.math.log(mini_object * old_action_prob) * advantage
+                    actor_loss = -tf.minimum(actor_object * advantage, old_action_prob * advantage)
                     actor_losses.append(actor_loss)
                     state_value = tf.expand_dims(state_value, 0)
                     ret = tf.expand_dims(ret, 0)
@@ -100,35 +100,37 @@ def run_episodes(worker_id, env, agent, total_episodes, ticker, lock, gradient_l
                     - entropy_coefficient * tf.reduce_mean(agent.policy_entropy_list)
 
                 agent.training_loss(loss)
-                # Compute gradients
-                grads = tape.gradient(loss, agent.network.trainable_variables)
 
-                with lock:
-                    gradient_list.append(grads)
             else:
                 print(f"{ticker} time out, skip this episode")
 
-            # Ensure this part is executed regardless of timeout
-            barrier.wait()
-            agent.old_network.set_weights(agent.network.get_weights())
-            if worker_id == 0:
-                # Check if the gradient list is not empty
-                if len(gradient_list) > 0:
-                    # Filter out None gradients from the list
-                    valid_gradient_lists = [grads for grads in gradient_list if all(g is not None for g in grads)]
-                    if len(valid_gradient_lists) > 0 and TRAINING:
-                        for grads in valid_gradient_lists:
-                            agent.optimizer.apply_gradients(zip(grads, agent.network.trainable_variables))
-                        print("all weight update")
+        # Compute gradients
+        if loss is not None:
+            grads = tape.gradient(loss, agent.network.trainable_variables)
+            with lock:
+                gradient_list.append(grads)
 
-                        # Clear the gradients list after applying
-                        gradient_list[:] = []
+        # Ensure this part is executed regardless of timeout
+        barrier.wait()
+        agent.old_network.set_weights(agent.network.get_weights())
+        if worker_id == 0:
+            # Check if the gradient list is not empty
+            if len(gradient_list) > 0:
+                # Filter out None gradients from the list
+                valid_gradient_lists = [grads for grads in gradient_list if all(g is not None for g in grads)]
+                if len(valid_gradient_lists) > 0 and TRAINING:
+                    for grads in valid_gradient_lists:
+                        agent.optimizer.apply_gradients(zip(grads, agent.network.trainable_variables))
+                    print("all weight update")
 
-                        # Save parameters with the lock to ensure thread safety
-                        with lock:
-                            new_weight[:] = agent.network.get_weights()
-                    else:
-                        print("No weights")
+                    # Clear the gradients list after applying
+                    gradient_list[:] = []
+
+                    # Save parameters with the lock to ensure thread safety
+                    with lock:
+                        new_weight[:] = agent.network.get_weights()
+                else:
+                    print("No weights")
         barrier.wait()
 
 
@@ -168,7 +170,7 @@ def close_positions(trader, ticker):
 
 def strategy(worker_id, trader: shift.Trader, ticker: str, total_episode, gradient_lock, gradient_list, barrier,
              new_weight):
-    env = SHIFT_env(trader, 0.2, 1, 5, ticker, 0.003, 6, 3)
+    env = SHIFT_env(trader, 0.2, 1, 5, ticker, 0.003, 5, 1)
     agent = PPOActorCritic(env)
     initial_pl = trader.get_portfolio_item(ticker).get_realized_pl()
 
@@ -208,6 +210,7 @@ def main(trader, episode):
     #tickers = ['MSFT']
     #tickers = ["AAPL", "MSFT", "JNJ", "BA", "IBM"]
     tickers = trader.get_stock_list()
+    print(f"tickers: {tickers}")
 
     # extract ticker name
     # all_tickers = trader.get_stock_list()

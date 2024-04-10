@@ -94,6 +94,10 @@ class SHIFT_env:
         self.remained_time = 5
         self.time_steps = time_steps
         self.target_shares = target_shares
+        self.current_share = self.trader.get_portfolio_item(self.symbol)
+        self.current_long = self.current_share.get_long_shares()
+        self.current_short = self.current_share.get_short_shares()
+        self.total_bp = self.trader.get_portfolio_summary().get_total_bp()
 
         self.endTime = datetime.strptime('15:55', '%H:%M').time()
 
@@ -108,7 +112,7 @@ class SHIFT_env:
 
     @staticmethod
     def obs_space():
-        return 7
+        return 10
 
     def get_signal(self):
         mid_price = []
@@ -131,9 +135,9 @@ class SHIFT_env:
                     # print(f"limit buying because {self.symbol} short shares = {short_shares}")
                     self.set_objective(self.target_shares, self.time_steps)
             else:
-                if long_shares < 1000 and mid_price[-1] > mid_price[0]:
+                if mid_price[-1] > mid_price[0]:
                     self.set_objective(self.target_shares, self.time_steps)
-                if short_shares < 1000 and mid_price[-1] < mid_price[0]:
+                if mid_price[-1] < mid_price[0]:
                     self.set_objective(-self.target_shares, self.time_steps)
 
     def _link(self):
@@ -228,7 +232,11 @@ class SHIFT_env:
         return next_obs, reward, done, dict(), post_long, post_short, trade_time
 
     def _get_obs(self):
-        return np.concatenate((self.compute(), np.array([self.remained_share, self.remained_time])))
+        return np.concatenate((self.compute(), np.array([self.remained_share,
+                                                         self.remained_time,
+                                                         self.current_long,
+                                                         self.current_short,
+                                                         self.total_bp])))
 
     def _getClosePrice(self, share):
         return self.trader.get_close_price(self.symbol, self.isBuy, int(abs(share)))
