@@ -256,6 +256,6 @@ if __name__ == '__main__':
         trader.sub_all_order_book()
         sleep(1)
 
-        episode = 1000
+        episode = 10000000000
         main(trader, episode)
         trader.disconnect()
