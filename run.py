@@ -7,7 +7,7 @@ import shift
 from threading import Lock, Barrier, Thread
 from datetime import datetime
 
-TRAIN = True  # Set to True to enable training
+TRAIN = False  # Set to True to enable training
 weights_path = 'A2C_network_weights.h5'  # Define a path for the weights
 MAX_STEPS_PER_EPISODE = 10
 TOTAL_EPISODES = 100000
