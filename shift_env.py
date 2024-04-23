@@ -8,6 +8,8 @@ import random
 from data_feed import *
 from datetime import datetime
 
+TRAIN = False
+
 # Set up basic configuration for logging
 logging.basicConfig(level=logging.INFO, format='%(asctime)s - %(levelname)s - %(message)s')
 
@@ -100,11 +102,12 @@ class SHIFT_env:
 
         # close out position when market is going to end
         last_trade_time = self.trader.get_last_trade_time().time()
-        if last_trade_time > self.endTime:
-            action = 0
-            self.close_positions()
-            self.cancel_orders()
-            print("Market is about to end, start closing out.")
+        if not TRAIN:
+            if last_trade_time > self.endTime:
+                action = 0
+                self.close_positions()
+                self.cancel_orders()
+                print("Market is about to end, start closing out.")
 
 
         item = self.trader.get_portfolio_item(self.ticker)

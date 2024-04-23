@@ -1,4 +1,4 @@
-from shift_env import SHIFT_env
+from shift_env import SHIFT_env, TRAIN
 from shift_agent import *
 import os
 from time import sleep
@@ -7,7 +7,6 @@ import shift
 from threading import Lock, Barrier, Thread
 from datetime import datetime
 
-TRAIN = False  # Set to True to enable training
 weights_path = 'A2C_network_weights.h5'  # Define a path for the weights
 MAX_STEPS_PER_EPISODE = 10
 TOTAL_EPISODES = 100000
@@ -50,8 +49,7 @@ def strategy(trader, ticker, gradient_list, barrier, lock, worker_id):
                 agent.reward_history.append(reward)
                 state = np.copy(next_state)
 
-            last_trade_time = trader.get_last_trade_time().time()
-            if TRAIN and last_trade_time < env.endTime:
+            if TRAIN:
                 # Calculate the discounted return for each step in the history.
                 returns = []
                 discounted_sum = 0
