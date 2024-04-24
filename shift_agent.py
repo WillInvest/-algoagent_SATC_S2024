@@ -18,9 +18,7 @@ from tensorflow.keras.layers import Input, Dense
 
 GAMMA = 0.99
 LEARNING_RATE = 0.0001
-ACTOR_LEARNING_RATE = 0.0001
-CRITIC_LEARNING_RATE = 0.0001
-STATE_SHAPE = (24,)
+STATE_SHAPE = (32,)
 ACTIONS = [-1, 0, 1]
 
 LOG_DIR = "tensorboard_logs/" + datetime.datetime.now().strftime("%Y%m%d-%H%M%S")
@@ -73,6 +71,5 @@ class ActorCritic:
         self.entropy_history.append(policy_entropy)
         self.action_prob_history.append(log_prob)
         self.state_value_history.append(state_value)
-        print(f"action_prob: {action_prob}, state_value: {state_value}")
 
-        return action
+        return action, action_prob

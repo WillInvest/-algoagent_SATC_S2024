@@ -5,7 +5,6 @@ from time import sleep
 import shift
 
 
-
 class WeightedPrice:
     def __init__(self):
         self.data_lock = threading.Lock()
@@ -23,7 +22,8 @@ class WeightedPrice:
         with self.data_lock:
             return self.weighted_ask, self.weighted_bid, self.weighted_spread
 
-def collect_high_frequency_data(trader, ticker, weighted_price, thread_alive, time_interval=10):
+
+def collect_high_frequency_data(trader, ticker, weighted_price, thread_alive, time_step=0.1, step_time=1):
     interval_data_list = []
     while thread_alive:
         bid_orders = trader.get_order_book(ticker, shift.OrderBookType.LOCAL_BID, 1)
@@ -40,7 +40,7 @@ def collect_high_frequency_data(trader, ticker, weighted_price, thread_alive, ti
             })
 
         # Process data less frequently
-        if len(interval_data_list) >= time_interval:  # For example, process every 10 seconds
+        if len(interval_data_list) >= int(step_time / time_step):  # For example, process every 10 seconds
             df = pd.DataFrame(interval_data_list)
             bid_results_df, ask_results_df = get_weighted(df)
             weighted_bid = calculate_weighted_price(bid_results_df)
@@ -49,7 +49,8 @@ def collect_high_frequency_data(trader, ticker, weighted_price, thread_alive, ti
             weighted_price.update(weighted_ask, weighted_bid, weighted_spread)
             interval_data_list.clear()  # Clear after processing
 
-        sleep(1)
+        sleep(time_step)
+
 
 def get_weighted(df):
     # Split the DataFrame into bids and asks
@@ -106,6 +107,7 @@ def calculate_weighted_price(df):
         return weighted_price
     else:
         return 0
+
 
 if __name__ == '__main__':
     with shift.Trader("algoagent") as trader:
