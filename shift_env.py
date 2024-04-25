@@ -11,7 +11,7 @@ from collections import deque
 import gymnasium as gym
 import numpy as np
 
-TRAIN = False
+TRAIN = True
 
 # Set up basic configuration for logging
 logging.basicConfig(level=logging.INFO, format='%(asctime)s - %(levelname)s - %(message)s')
@@ -174,45 +174,39 @@ class SHIFT_env:
 
         if action == 1:
             # Buy
-            if curr_position == 0:
-                order_size = 1
-            elif curr_position == -1:
-                order_size = 2
-            else:
-                order_size = 0
-
-            if order_size > 0 and self.trader.get_portfolio_summary().get_total_bp() > (
-                    order_size * 100 * self.trader.get_last_price(self.ticker)):
-                order = shift.Order(shift.Order.Type.MARKET_BUY, self.ticker, order_size)
-                self.trader.submit_order(order)
-            elif order_size > 0:
-                print(f"{self.ticker} insufficient buying power: {self.trader.get_portfolio_summary().get_total_bp()}")
+            if curr_position <= 0:  # Buy if current position is zero or negative
+                order_size = 1 if curr_position == 0 else int(action-curr_position)  # Buy more if currently short
+                if self.trader.get_portfolio_summary().get_total_bp() > (
+                        order_size * 100 * self.trader.get_last_price(self.ticker)):
+                    order = shift.Order(shift.Order.Type.MARKET_BUY, self.ticker, order_size)
+                    self.trader.submit_order(order)
+                else:
+                    print(
+                        f"{self.ticker} insufficient buying power: {self.trader.get_portfolio_summary().get_total_bp()}")
+            # If current_position is positive, do nothing as we are already long
 
         elif action == 0:
             # Adjust position to neutral
-            if curr_position == 1:
-                order = shift.Order(shift.Order.Type.MARKET_SELL, self.ticker, 1)
+            if curr_position > 0:
+                order = shift.Order(shift.Order.Type.MARKET_SELL, self.ticker, int(abs(curr_position)))
                 self.trader.submit_order(order)
-            elif curr_position == -1:
-                order = shift.Order(shift.Order.Type.MARKET_BUY, self.ticker, 1)
+            elif curr_position < 0:
+                order = shift.Order(shift.Order.Type.MARKET_BUY, self.ticker, int(abs(curr_position)))
                 self.trader.submit_order(order)
             # If current_position is 0, do nothing
 
         elif action == -1:
             # Sell
-            if curr_position == 1:
-                order_size = 2
-            elif curr_position == 0:
-                order_size = 1
-            else:
-                order_size = 0
-
-            if order_size > 0 and self.trader.get_portfolio_summary().get_total_bp() > (
-                    order_size * 100 * self.trader.get_last_price(self.ticker)):
-                order = shift.Order(shift.Order.Type.MARKET_SELL, self.ticker, order_size)
-                self.trader.submit_order(order)
-            elif order_size > 0:
-                print(f"{self.ticker} insufficient buying power: {self.trader.get_portfolio_summary().get_total_bp()}")
+            if curr_position >= 0:  # Sell if current position is zero or positive
+                order_size = 1 if curr_position == 0 else int(curr_position-action)  # Sell more if currently long
+                if self.trader.get_portfolio_summary().get_total_bp() > (
+                        order_size * 100 * self.trader.get_last_price(self.ticker)):
+                    order = shift.Order(shift.Order.Type.MARKET_SELL, self.ticker, order_size)
+                    self.trader.submit_order(order)
+                else:
+                    print(
+                        f"{self.ticker} insufficient buying power: {self.trader.get_portfolio_summary().get_total_bp()}")
+            # If current_position is negative, do nothing as we are already short
 
         sleep(self.step_time)  # Simulate passage of time
 
