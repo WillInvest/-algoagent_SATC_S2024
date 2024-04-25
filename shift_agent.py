@@ -52,7 +52,6 @@ class ActorCritic:
 
     def policy(self, state):
         """
-
         :param state:
         :return:
         """
@@ -63,6 +62,14 @@ class ActorCritic:
         # Feed the neural network with one state and get one set of action probabilities
         # and one state value estimation.
         action_prob, state_value = self.network(state)
+
+        # Check if action_prob contains NaN values using tf.reduce_any and tf.math.is_nan.
+        if tf.reduce_any(tf.math.is_nan(action_prob)):
+            print("NaN detected in action probabilities, resetting the network.")
+            self.network = self._build_network()  # Reinitialize the network
+            action_prob, state_value = self.network(state)  # Re-run the policy with the new network
+
+        # Select action based on the processed probabilities
         action = np.random.choice(np.array(self.actions), p=np.squeeze(action_prob))
         # Calculate and store the logarithm probability of the selected action.
         log_prob = tf.math.log(action_prob[0][action])
@@ -73,3 +80,4 @@ class ActorCritic:
         self.state_value_history.append(state_value)
 
         return action, action_prob
+

@@ -22,7 +22,7 @@ widths = {
     "total_bp": 10,
     "curr_equity": 10,
     "curr_inv": 6,
-    "curr_last_price":5
+    "curr_last_price": 5
 }
 
 
@@ -132,16 +132,21 @@ def strategy(account, ticker, gradient_list, barrier, lock, worker_id):
 
 if __name__ == '__main__':
 
-    accounts = [
-        'algoagent',
-        'algoagent_test000',
-        'algoagent_test001',
-        'algoagent_test002',
-        'algoagent_test003',
-        'algoagent_test004'
-    ]
-    # accounts = ['algoagent_test003']
+    if TRAIN:
+        accounts = [
+            'algoagent',
+            'algoagent_test000',
+            'algoagent_test001',
+            'algoagent_test002',
+            'algoagent_test003',
+            'algoagent_test004'
+        ]
+
+    else:
+        accounts = ['algoagent']
+
     tickers = ['CS1']
+
     print(f"Ticker: {tickers}")
     PROCESS_NUM = len(tickers)
 
@@ -163,7 +168,6 @@ if __name__ == '__main__':
             worker.start()
             print(f"Worker {worker_id} starts")
             worker_id += 1
-
 
     for thread in threads:
         thread.join()

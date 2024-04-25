@@ -11,7 +11,7 @@ from collections import deque
 import gymnasium as gym
 import numpy as np
 
-TRAIN = True
+TRAIN = False
 
 # Set up basic configuration for logging
 logging.basicConfig(level=logging.INFO, format='%(asctime)s - %(levelname)s - %(message)s')
@@ -42,9 +42,6 @@ class SHIFT_env:
                                                   self.weighted_price,
                                                   self.data_thread_alive))
         high_frequency_data_thread.start()
-
-        # states return a list with these values: mp, sp, inv, bp, bid_volumes, ask_volumes, order_size, target order
-        # proportions, gamma, alpha$
 
         self.observation_space = gym.spaces.Box(
             np.array(
@@ -172,34 +169,50 @@ class SHIFT_env:
                 self.close_positions()
                 self.trader.cancel_all_pending_orders()
                 print("Market is about to end, start closing out.")
+
+        curr_position = self.get_state()[self.n_time_step + 1]
+
         if action == 1:
-            # buy
-            if self.trader.get_portfolio_summary().get_total_bp() > (
-                    abs(action) * 100 * self.trader.get_last_price(self.ticker)
-            ):
-                order = shift.Order(
-                    shift.Order.Type.MARKET_BUY, self.ticker, self.order_size
-                )
-                self.trader.submit_order(order)
+            # Buy
+            if curr_position == 0:
+                order_size = 1
+            elif curr_position == -1:
+                order_size = 2
             else:
-                print(
-                    f"{self.ticker} insufficient buying power: {self.trader.get_portfolio_summary().get_total_bp()}"
-                )
+                order_size = 0
+
+            if order_size > 0 and self.trader.get_portfolio_summary().get_total_bp() > (
+                    order_size * 100 * self.trader.get_last_price(self.ticker)):
+                order = shift.Order(shift.Order.Type.MARKET_BUY, self.ticker, order_size)
+                self.trader.submit_order(order)
+            elif order_size > 0:
+                print(f"{self.ticker} insufficient buying power: {self.trader.get_portfolio_summary().get_total_bp()}")
+
+        elif action == 0:
+            # Adjust position to neutral
+            if curr_position == 1:
+                order = shift.Order(shift.Order.Type.MARKET_SELL, self.ticker, 1)
+                self.trader.submit_order(order)
+            elif curr_position == -1:
+                order = shift.Order(shift.Order.Type.MARKET_BUY, self.ticker, 1)
+                self.trader.submit_order(order)
+            # If current_position is 0, do nothing
+
         elif action == -1:
-            # sell
-            if self.trader.get_portfolio_summary().get_total_bp() > (
-                    abs(action) * 100 * self.trader.get_last_price(self.ticker)
-            ):
-                order = shift.Order(
-                    shift.Order.Type.MARKET_SELL, self.ticker, self.order_size
-                )
-                self.trader.submit_order(order)
+            # Sell
+            if curr_position == 1:
+                order_size = 2
+            elif curr_position == 0:
+                order_size = 1
             else:
-                print(
-                    f"{self.ticker} insufficient buying power: {self.trader.get_portfolio_summary().get_total_bp()}"
-                )
-        else:
-            pass
+                order_size = 0
+
+            if order_size > 0 and self.trader.get_portfolio_summary().get_total_bp() > (
+                    order_size * 100 * self.trader.get_last_price(self.ticker)):
+                order = shift.Order(shift.Order.Type.MARKET_SELL, self.ticker, order_size)
+                self.trader.submit_order(order)
+            elif order_size > 0:
+                print(f"{self.ticker} insufficient buying power: {self.trader.get_portfolio_summary().get_total_bp()}")
 
         sleep(self.step_time)  # Simulate passage of time
 
@@ -213,6 +226,8 @@ class SHIFT_env:
         self.initial_equity = curr_equity
         self.initial_lp = curr_lp
         reward = pnl - abs(action) * 0.3
+        if abs(reward) > 1000:
+            reward = 0
 
         return state, reward, total_bp, curr_inv, curr_equity, curr_lp
 

@@ -116,32 +116,6 @@ if __name__ == '__main__':
         trader.sub_all_order_book()
         sleep(1)
 
-        tickers = ['CS1']
-        print(f"ticker: {tickers}")
-
-        print("  Price\t\tSize\t  Dest\t\tTime")
-        for order in trader.get_order_book("CS1", shift.OrderBookType.LOCAL_BID, 5):
-            print(
-                "%7.2f\t\t%4d\t%6s\t\t%19s"
-                % (order.price, order.size, order.destination, order.time)
-            )
-
-        print("  Price\t\tSize\t  Dest\t\tTime")
-        for order in trader.get_order_book("CS1", shift.OrderBookType.LOCAL_ASK, 5):
-            print(
-                "%7.2f\t\t%4d\t%6s\t\t%19s"
-                % (order.price, order.size, order.destination, order.time)
-            )
-
-        for _ in range(100):
-            for ticker in tickers:
-                bids = trader.get_order_book(ticker, shift.OrderBookType.LOCAL_BID, 1)
-                asks = trader.get_order_book(ticker, shift.OrderBookType.LOCAL_ASK, 1)
-                last_price = trader.get_last_price(ticker)
-                best_price = trader.get_best_price(ticker)
-                print(f"last_price: {last_price}")
-                print(f"best_ask: {best_price.get_ask_price()} | {asks[0].price}")
-                print(f"best_bid: {best_price.get_bid_price()} | {bids[0].price}")
-                sleep(1)
+        print(trader.get_stock_list())
 
         trader.disconnect()
