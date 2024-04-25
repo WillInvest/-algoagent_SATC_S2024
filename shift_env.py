@@ -11,7 +11,7 @@ from collections import deque
 import gymnasium as gym
 import numpy as np
 
-TRAIN = True
+TRAIN = False
 
 # Set up basic configuration for logging
 logging.basicConfig(level=logging.INFO, format='%(asctime)s - %(levelname)s - %(message)s')
