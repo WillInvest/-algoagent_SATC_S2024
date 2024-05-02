@@ -3,6 +3,7 @@ import threading
 import time
 from time import sleep
 import shift
+from collections import deque
 
 
 class WeightedPrice:
@@ -23,9 +24,14 @@ class WeightedPrice:
             return self.weighted_ask, self.weighted_bid, self.weighted_spread
 
 
-def collect_high_frequency_data(trader, ticker, weighted_price, thread_alive, time_step=0.1, step_time=1):
-    interval_data_list = []
+def collect_high_frequency_data(trader, ticker, weighted_price, thread_alive, time_step=0.1, step_time=10):
+    # Initialize a deque with a maximum length to store 100 data points
+    interval_data_list = deque(maxlen=60)
+    count = 0
+
     while thread_alive:
+        count += 1
+        # Collect bid and ask orders
         bid_orders = trader.get_order_book(ticker, shift.OrderBookType.LOCAL_BID, 1)
         ask_orders = trader.get_order_book(ticker, shift.OrderBookType.LOCAL_ASK, 1)
 
@@ -38,19 +44,22 @@ def collect_high_frequency_data(trader, ticker, weighted_price, thread_alive, ti
                 'Ask Price': best_ask.price,
                 'Ask Size': best_ask.size
             })
-
-        # Process data less frequently
-        if len(interval_data_list) >= int(step_time / time_step):  # For example, process every 10 seconds
+        # print(f"length: {len(interval_data_list)}")
+        # Process data less frequently (every 10 seconds)
+        if len(interval_data_list) == 60 and count % 10 == 0:
             df = pd.DataFrame(interval_data_list)
+
             bid_results_df, ask_results_df = get_weighted(df)
+            # print(f"bid_results_df: {bid_results_df}")
+            # print(f"ask_results_df: {ask_results_df}")
             weighted_bid = calculate_weighted_price(bid_results_df)
             weighted_ask = calculate_weighted_price(ask_results_df)
             weighted_spread = weighted_ask - weighted_bid
+
             weighted_price.update(weighted_ask, weighted_bid, weighted_spread)
-            interval_data_list.clear()  # Clear after processing
-
-        sleep(time_step)
-
+            # print(f"weighted_price: {weighted_price}")
+        # Wait for the next time step before collecting more data
+        time.sleep(time_step)
 
 def get_weighted(df):
     # Split the DataFrame into bids and asks
