@@ -7,7 +7,7 @@ import shift
 from threading import Lock, Barrier, Thread
 import numpy as np
 
-weights_path = 'A2C_network_weights.h5'  # Define a path for the weights
+weights_path = 'PPO_network_weights.h5'  # Define a path for the weights
 MAX_STEPS_PER_EPISODE = 60
 TOTAL_EPISODES = 100000
 GAMMA = 0.99  # Discount factor for rewards
@@ -32,13 +32,7 @@ widths = {
 }
 
 
-def strategy(account, ticker, gradient_list, barrier, lock, worker_id):
-    trader = shift.Trader(account)
-    trader.connect("initiator.cfg", "x6QYVYRT")
-    sleep(1)
-    trader.sub_all_order_book()
-    sleep(1)
-
+def strategy(trader, ticker):
     env = SHIFT_env(trader, ticker)
     print(f"Shift Environment Initialized: {ticker}")
     agent = PPOActorCritic(env)
@@ -46,14 +40,9 @@ def strategy(account, ticker, gradient_list, barrier, lock, worker_id):
 
     # Synchronize neural network parameters between all workers before learning starts.
     if not os.path.exists(weights_path):
-        if worker_id == 0:
-            agent.network.save_weights(weights_path)
-
-    barrier.wait()
+        agent.network.save_weights(weights_path)
 
     agent.network.load_weights(weights_path)
-
-    barrier.wait()  # Another synchronization point
 
     # Get the environment ready
     state = agent.reset()
@@ -106,79 +95,31 @@ def strategy(account, ticker, gradient_list, barrier, lock, worker_id):
                 critic_losses.append(critic_loss)
             loss = \
                 tf.reduce_mean(actor_losses) \
-                  + VF_COEFFICIENT * tf.reduce_mean(critic_losses) \
-                  - ENTROPY_COEFFICIENT * tf.reduce_mean(
+                + VF_COEFFICIENT * tf.reduce_mean(critic_losses) \
+                - ENTROPY_COEFFICIENT * tf.reduce_mean(
                     agent.policy_entropy_list)
             loss = tf.clip_by_norm(loss, clip_norm=0.5)
             tf.debugging.assert_all_finite(loss, "Loss contains NaN or Inf")
             grads = tape.gradient(loss, agent.network.trainable_variables)
         grads = [(tf.clip_by_norm(grad, clip_norm=0.5)) for grad in grads]
-
-        # ------------------- Record/Apply Gradient  ------------------- #
-        # Wait for other workers to arrive.
-        barrier.wait()
-        # The order of the workers pushing gradients should be random to some extend.
-        lock.acquire()
-        gradient_list.append(grads)
-        lock.release()
-
         # Save parameters into old_network before updating network.
         agent.old_network.set_weights(agent.network.get_weights())
         print("old network update")
-        # Apply all gradients shared by other workers.
-        for grads in gradient_list:
-            agent.optimizer.apply_gradients(zip(grads, agent.network.trainable_variables))
-
-        # Wait for all workers to finish applying gradients.
-        # The first worker clears the shared gradient list.
-        barrier.wait()
-        if worker_id == 0:
-            gradient_list[:] = []
-            # Save parameters.
-            agent.network.save_weights(weights_path)
+        agent.optimizer.apply_gradients(zip(grads, agent.network.trainable_variables))
+        agent.network.save_weights(weights_path)
+        print("new weight saved")
 
 
 if __name__ == '__main__':
 
-    if TRAIN:
-        accounts = [
-            'algoagent_test000',
-            'algoagent_test001',
-            'algoagent_test002',
-            'algoagent_test003',
-            'algoagent_test004'
-        ]
+    with shift.Trader("algoagent") as trader:
+        trader.connect("initiator.cfg", "x6QYVYRT")
+        sleep(1)
+        trader.sub_all_order_book()
+        sleep(1)
+        ticker = 'CS1'
+        strategy(trader, ticker)
+        trader.disconnect()
 
-    else:
-        accounts = ['algoagent']
 
-    # tickers = ['AAPL', 'AXP', 'BA', 'CAT', 'CSCO', 'CVX', 'DIS',
-    #            'GS', 'HD', 'IBM', 'INTC', 'JNJ', 'JPM', 'KO',
-    #            'MCD', 'MMM', 'MRK', 'MSFT', 'NKE', 'PFE', 'PG',
-    #            'TRV', 'UNH', 'V', 'VZ', 'WBA', 'WMT', 'XOM']
-    tickers = ['CS1']
 
-    print(f"Ticker: {tickers}")
-    PROCESS_NUM = len(tickers) * len(accounts)
-
-    ba = Barrier(PROCESS_NUM)
-    lo = Lock()
-    gradient_list = []
-    threads = []
-    worker_id = 0
-
-    for account in accounts:
-        for i in range(len(tickers)):
-            worker = Thread(target=strategy,
-                            args=(account,
-                                  tickers[i],
-                                  gradient_list,
-                                  ba, lo,
-                                  worker_id))
-            threads.append(worker)
-            worker.start()
-            print(f"Worker {worker_id} starts")
-            worker_id += 1
-
-    for thread in threads:
-        thread.join()
