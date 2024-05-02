@@ -16,7 +16,7 @@ CLIP_RANGE = 0.2
 VF_COEFFICIENT = 0.5
 ENTROPY_COEFFICIENT = 0.01
 MAX_GRAD_NORM = 0.5
-TRAIN = True
+TRAIN = False
 
 widths = {
     "time_step": 2,
